@@ -448,7 +448,7 @@ HTML_TEMPLATE = """
                 <div class="flex items-center space-x-3 ml-4">
                     <label for="voice-select" class="text-gray-700 font-medium dark:text-gray-300">Voice:</label>
                     <select id="voice-select" class="p-2 border border-gray-300 rounded-md text-center dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200">
-                        <option value="p225">Default (p225)</option>
+                        <option value="p270">Default (p270)</option>
                     </select>
                 </div>
                 <div class="flex items-center space-x-3 ml-4">
@@ -529,72 +529,21 @@ HTML_TEMPLATE = """
                         // Clear existing options
                         voiceSelect.innerHTML = '';
                         
-                        // Define some popular male speakers with descriptions
-                        const maleVoices = {
-                            'p225': 'Male British (p225)',
-                            'p226': 'Male British (p226)', 
-                            'p227': 'Male British (p227)',
-                            'p232': 'Male British (p232)',
-                            'p237': 'Male British (p237)',
-                            'p241': 'Male Scottish (p241)',
-                            'p243': 'Male British (p243)',
-                            'p245': 'Male Irish (p245)',
-                            'p246': 'Male British (p246)',
-                            'p247': 'Male Scottish (p247)',
-                            'p251': 'Male British (p251)',
-                            'p252': 'Male British (p252)',
-                            'p254': 'Male British (p254)',
-                            'p256': 'Male British (p256)',
-                            'p258': 'Male British (p258)',
-                            'p259': 'Male British (p259)',
-                            'p270': 'Male British (p270)',
-                            'p271': 'Male British (p271)',
-                            'p272': 'Male British (p272)',
-                            'p273': 'Male British (p273)',
-                            'p274': 'Male British (p274)',
-                            'p275': 'Male British (p275)',
-                            'p278': 'Male British (p278)',
-                            'p279': 'Male British (p279)',
-                            'p281': 'Male Scottish (p281)',
-                            'p284': 'Male British (p284)',
-                            'p285': 'Male British (p285)',
-                            'p286': 'Male British (p286)',
-                            'p287': 'Male British (p287)'
-                        };
-                        
-                        // First add the popular male voices
-                        Object.entries(maleVoices).forEach(([speakerId, description]) => {
-                            if (data.speakers.includes(speakerId)) {
-                                const option = document.createElement('option');
-                                option.value = speakerId;
-                                option.textContent = description;
-                                voiceSelect.appendChild(option);
-                            }
-                        });
-                        
-                        // Add a separator
-                        const separator = document.createElement('option');
-                        separator.disabled = true;
-                        separator.textContent = '--- All Voices ---';
-                        voiceSelect.appendChild(separator);
-                        
                         // Add all available voices
                         data.speakers.forEach(speaker => {
-                            if (!maleVoices[speaker]) {
-                                const option = document.createElement('option');
-                                option.value = speaker;
-                                option.textContent = speaker;
-                                voiceSelect.appendChild(option);
-                            }
+                            const option = document.createElement('option');
+                            option.value = speaker;
+                            option.textContent = speaker;
+                            voiceSelect.appendChild(option);
                         });
                         
-                        // Set default to saved voice or p225 if available
+                        // Set default to saved voice or p270 if available
                         const savedVoice = localStorage.getItem('savedVoice');
                         if (savedVoice && data.speakers.includes(savedVoice)) {
                             voiceSelect.value = savedVoice;
                             console.log(`Restored saved voice: ${savedVoice}`);
-                        } else if (data.speakers.includes('p225')) {
-                            voiceSelect.value = 'p225';
+                        } else if (data.speakers.includes('p270')) {
+                            voiceSelect.value = 'p270';
                         }
                         
                         console.log(`Loaded ${data.speakers.length} voices`);
