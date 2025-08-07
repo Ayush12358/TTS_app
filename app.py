@@ -5,6 +5,8 @@ import io
 import base64
 import torch
 import sys
+import tempfile
+import os
 
 app = Flask(__name__)
 CORS(app) # Enable CORS for all routes
@@ -211,6 +213,12 @@ HTML_TEMPLATE = """
                 @apply bg-blue-700 hover:bg-blue-800;
             }
             html.dark .controls button:disabled {
+                @apply bg-gray-700;
+            }
+            html.dark #download-full-btn {
+                @apply bg-green-700 hover:bg-green-800;
+            }
+            html.dark #download-full-btn:disabled {
                 @apply bg-gray-700;
             }
             html.dark #status {
@@ -437,6 +445,9 @@ HTML_TEMPLATE = """
                 <button id="pause-btn" disabled class="icon-btn"><i class="fas fa-pause"></i></button>
                 <button id="stop-btn" disabled class="icon-btn"><i class="fas fa-stop"></i></button>
                 <button id="next-page-btn" disabled class="icon-btn"><i class="fas fa-chevron-right"></i></button>
+                <button id="download-full-btn" disabled class="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded-lg transition duration-200 ease-in-out disabled:bg-gray-400 disabled:cursor-not-allowed">
+                    <i class="fas fa-download mr-2"></i>Download Full Audio
+                </button>
                 <div class="flex items-center space-x-3 ml-4">
                     <label for="wpm-input" class="text-gray-700 font-medium dark:text-gray-300">WPM:</label>
                     <input type="number" id="wpm-input" min="50" max="500" value="180" step="10" class="w-24 p-2 border border-gray-300 rounded-md text-center dark:bg-gray-700 dark:border-gray-600 dark:text-gray-200">
@@ -457,6 +468,24 @@ HTML_TEMPLATE = """
                 </div>
             </div>
             <audio id="audio-player" controls class="w-1/4 mt-2"></audio>
+            
+            <!-- Progress bar for full document download (initially hidden) -->
+            <div id="download-progress-container" class="w-full mt-4 hidden">
+                <div class="flex items-center justify-between mb-2">
+                    <span id="download-status-text" class="text-sm font-medium text-gray-700 dark:text-gray-300">Generating full document audio...</span>
+                    <span id="download-progress-text" class="text-sm text-gray-600 dark:text-gray-400">0%</span>
+                </div>
+                <div class="w-full bg-gray-200 rounded-full h-3 dark:bg-gray-700">
+                    <div id="download-progress-bar" class="bg-green-600 h-3 rounded-full transition-all duration-500 ease-out" style="width: 0%">
+                        <!-- Progress bar shimmer effect -->
+                        <div class="h-full bg-gradient-to-r from-transparent via-white to-transparent opacity-20 rounded-full animate-pulse"></div>
+                    </div>
+                </div>
+                <div class="flex justify-between mt-1">
+                    <span id="chunk-info" class="text-xs text-gray-500 dark:text-gray-400"></span>
+                    <span id="estimated-time" class="text-xs text-gray-500 dark:text-gray-400"></span>
+                </div>
+            </div>
         </div>
 
         <script>
@@ -485,6 +514,13 @@ HTML_TEMPLATE = """
             const ocrToggle = document.getElementById('ocr-toggle');
             const voiceSelect = document.getElementById('voice-select');
             const timeEstimate = document.getElementById('time-estimate');
+            const downloadFullBtn = document.getElementById('download-full-btn');
+            const downloadProgressContainer = document.getElementById('download-progress-container');
+            const downloadProgressBar = document.getElementById('download-progress-bar');
+            const downloadProgressText = document.getElementById('download-progress-text');
+            const downloadStatusText = document.getElementById('download-status-text');
+            const chunkInfo = document.getElementById('chunk-info');
+            const estimatedTime = document.getElementById('estimated-time');
 
             let tesseractWorker = null;
             let pdfDocument = null;
@@ -504,6 +540,7 @@ HTML_TEMPLATE = """
             let isFetchingAudio = false; // Flag to prevent multiple concurrent fetches
 
             const TTS_API_URL = 'http://127.0.0.1:{{ port }}/tts'; // Coqui TTS backend URL
+            const FULL_DOC_TTS_API_URL = 'http://127.0.0.1:{{ port }}/full-document-tts'; // Full document TTS backend URL
             <!-- cont TTS_API_URL = '/tts'; // Coqui TTS backend URL -->
             const PREFETCH_COUNT = 2; // Number of sentences to pre-fetch
             const BASELINE_WPM = 180; // Assumed WPM for playbackRate = 1.0
@@ -613,7 +650,7 @@ HTML_TEMPLATE = """
                 let totalWords = 0;
                 remainingSentences.forEach(sentence => {
                     // Simple word count: split by spaces and filter out empty strings
-                    const words = sentence.trim().split(/\s+/).filter(word => word.length > 0);
+                    const words = sentence.trim().split(/\\s+/).filter(word => word.length > 0);
                     totalWords += words.length;
                 });
 
@@ -714,9 +751,11 @@ HTML_TEMPLATE = """
                 updateNavigationButtons();
                 if (sentences.length > 0) {
                     playBtn.disabled = false;
+                    downloadFullBtn.disabled = false; // Enable download button when content is available
                     updateTimeEstimate(); // Calculate time estimate for the page
                 } else {
                     playBtn.disabled = true;
+                    downloadFullBtn.disabled = true; // Disable download button when no content
                     timeEstimate.textContent = '--:--';
                 }
             }
@@ -782,9 +821,11 @@ HTML_TEMPLATE = """
                 
                 if (textSentences.length > 0) {
                     playBtn.disabled = false;
+                    downloadFullBtn.disabled = false; // Enable download button when content is available
                     updateTimeEstimate(); // Calculate time estimate for the text
                 } else {
                     playBtn.disabled = true;
+                    downloadFullBtn.disabled = true; // Disable download button when no content
                     timeEstimate.textContent = '--:--';
                 }
             }
@@ -905,6 +946,7 @@ HTML_TEMPLATE = """
                 stopPlayback();
                 prevPageBtn.disabled = true;
                 nextPageBtn.disabled = true;
+                downloadFullBtn.disabled = true; // Disable download button until content is processed
                 textAudioCache = []; // Clear text audio cache
                 markdownElementMap = []; // Clear markdown element mapping
                 currentSentenceIndex = 0;
@@ -918,6 +960,7 @@ HTML_TEMPLATE = """
                 pdfViewer.classList.remove('hidden');
                 textOutput.classList.remove('hidden');
                 stopPlayback();
+                downloadFullBtn.disabled = true; // Disable download button until content is processed
                 textSentences = [];
                 textAudioCache = [];
                 currentSentenceIndex = 0;
@@ -936,6 +979,7 @@ HTML_TEMPLATE = """
                 stopBtn.disabled = true;
                 prevPageBtn.disabled = true;
                 nextPageBtn.disabled = true;
+                downloadFullBtn.disabled = true; // Disable download button until content is loaded
                 stopPlayback();
                 pdfDocument = null;
                 currentPageNumber = 0;
@@ -1029,6 +1073,16 @@ HTML_TEMPLATE = """
 
             stopBtn.addEventListener('click', stopPlayback);
 
+            // Download full document audio handler
+            downloadFullBtn.addEventListener('click', async () => {
+                if (sentences.length === 0) {
+                    statusDiv.textContent = 'No content available to download.';
+                    return;
+                }
+                
+                await downloadFullDocumentAudio();
+            });
+
             function stopPlayback() {
                 isPlaying = false;
                 isPaused = false;
@@ -1041,6 +1095,267 @@ HTML_TEMPLATE = """
                 stopBtn.disabled = true;
                 removeHighlight(); // Only remove HTML highlight
                 updateTimeEstimate(); // Reset time estimate to full document
+            }
+
+            // Download full document audio as a single file
+            async function downloadFullDocumentAudio() {
+                try {
+                    // Disable the download button during processing
+                    downloadFullBtn.disabled = true;
+                    
+                    // Show progress bar
+                    downloadProgressContainer.classList.remove('hidden');
+                    downloadProgressBar.style.width = '0%';
+                    downloadProgressText.textContent = '0%';
+                    downloadStatusText.textContent = 'Preparing document...';
+                    chunkInfo.textContent = '';
+                    estimatedTime.textContent = '';
+                    
+                    const startTime = Date.now();
+                    
+                    // Get all text content
+                    let fullText = '';
+                    if (isTextMode) {
+                        fullText = originalTextContent || textSentences.join(' ');
+                    } else {
+                        // For PDF mode, get all sentences from all pages
+                        const allSentences = [];
+                        ocrResults.forEach((pageData, index) => {
+                            if (pageData && pageData.sentences) {
+                                allSentences.push(...pageData.sentences);
+                            }
+                        });
+                        fullText = allSentences.join(' ');
+                    }
+                    
+                    if (!fullText.trim()) {
+                        throw new Error('No content available to convert to audio');
+                    }
+                    
+                    // Split text into chunks for better progress tracking
+                    const chunks = splitTextIntoChunks(fullText, 500); // ~500 words per chunk
+                    const audioChunks = [];
+                    
+                    downloadStatusText.textContent = `Processing ${chunks.length} chunks...`;
+                    chunkInfo.textContent = `Document split into ${chunks.length} chunks`;
+                    statusDiv.textContent = `Generating full document audio... Processing ${chunks.length} chunks.`;
+                    
+                    // Process each chunk
+                    for (let i = 0; i < chunks.length; i++) {
+                        const chunk = chunks[i];
+                        
+                        // Update progress BEFORE processing (showing current chunk being processed)
+                        const progressBefore = Math.round((i / chunks.length) * 100);
+                        downloadProgressBar.style.width = `${progressBefore}%`;
+                        downloadProgressText.textContent = `${progressBefore}%`;
+                        downloadStatusText.textContent = `Processing chunk ${i + 1} of ${chunks.length}...`;
+                        chunkInfo.textContent = `Chunk ${i + 1}/${chunks.length} - ${chunk.split(' ').length} words`;
+                        statusDiv.textContent = `Processing chunk ${i + 1} of ${chunks.length}...`;
+                        
+                        // Calculate estimated time remaining
+                        if (i > 0) {
+                            const elapsed = Date.now() - startTime;
+                            const avgTimePerChunk = elapsed / i;
+                            const remainingChunks = chunks.length - i;
+                            const estimatedRemainingMs = avgTimePerChunk * remainingChunks;
+                            const estimatedRemainingMin = Math.ceil(estimatedRemainingMs / 60000);
+                            estimatedTime.textContent = `~${estimatedRemainingMin} min remaining`;
+                        }
+                        
+                        // Make API call for this chunk
+                        const response = await fetch(FULL_DOC_TTS_API_URL, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify({ 
+                                text: chunk,
+                                speaker: voiceSelect.value,
+                                chunk_index: i,
+                                total_chunks: chunks.length
+                            }),
+                        });
+
+                        if (!response.ok) {
+                            throw new Error(`HTTP error on chunk ${i + 1}! status: ${response.status}`);
+                        }
+
+                        const data = await response.json();
+                        
+                        if (data.audio) {
+                            audioChunks.push(data.audio);
+                            
+                            // Update progress AFTER successful processing
+                            const progressAfter = Math.round(((i + 1) / chunks.length) * 100);
+                            downloadProgressBar.style.width = `${progressAfter}%`;
+                            downloadProgressText.textContent = `${progressAfter}%`;
+                            chunkInfo.textContent = `Completed ${i + 1}/${chunks.length} chunks`;
+                        } else {
+                            throw new Error(`No audio data received for chunk ${i + 1}.`);
+                        }
+                    }
+                    
+                    // Ensure progress shows 100% before combining
+                    downloadProgressBar.style.width = '100%';
+                    downloadProgressText.textContent = '100%';
+                    downloadStatusText.textContent = 'Combining audio chunks...';
+                    chunkInfo.textContent = `All ${chunks.length} chunks processed`;
+                    estimatedTime.textContent = 'Almost done...';
+                    statusDiv.textContent = 'Combining audio chunks...';
+                    
+                    // Combine all audio chunks
+                    const combinedAudioBlob = await combineAudioChunks(audioChunks);
+                    
+                    // Create download link
+                    const url = URL.createObjectURL(combinedAudioBlob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    
+                    // Generate filename based on content type
+                    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+                    const contentType = isTextMode ? 'text' : 'pdf';
+                    a.download = `tts-full-document-${contentType}-${timestamp}.wav`;
+                    
+                    // Trigger download
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    
+                    // Clean up the URL
+                    URL.revokeObjectURL(url);
+                    
+                    downloadStatusText.textContent = 'Download complete!';
+                    chunkInfo.textContent = 'Audio file ready';
+                    estimatedTime.textContent = '';
+                    statusDiv.textContent = 'Full document audio downloaded successfully!';
+                    
+                } catch (error) {
+                    console.error('Error downloading full document audio:', error);
+                    statusDiv.textContent = `Error generating full document audio: ${error.message}`;
+                } finally {
+                    // Re-enable download button and hide progress bar
+                    downloadFullBtn.disabled = false;
+                    
+                    // Hide progress bar after a delay
+                    setTimeout(() => {
+                        downloadProgressContainer.classList.add('hidden');
+                    }, 2000);
+                }
+            }
+
+            // Split text into manageable chunks for processing
+            function splitTextIntoChunks(text, wordsPerChunk = 500) {
+                const words = text.trim().split(/\\s+/);
+                const chunks = [];
+                
+                for (let i = 0; i < words.length; i += wordsPerChunk) {
+                    const chunk = words.slice(i, i + wordsPerChunk).join(' ');
+                    if (chunk.trim().length > 0) {
+                        chunks.push(chunk);
+                    }
+                }
+                
+                return chunks.length > 0 ? chunks : [text]; // Return original text if chunking fails
+            }
+
+            // Combine multiple base64 audio chunks into a single audio blob
+            async function combineAudioChunks(base64AudioChunks) {
+                if (base64AudioChunks.length === 1) {
+                    // If only one chunk, just convert it to blob
+                    return base64ToBlob(base64AudioChunks[0], 'audio/wav');
+                }
+                
+                try {
+                    // For multiple chunks, we'll use the Web Audio API to concatenate them
+                    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    const audioBuffers = [];
+                    
+                    // Convert each base64 chunk to audio buffer
+                    for (const base64Audio of base64AudioChunks) {
+                        const arrayBuffer = base64ToArrayBuffer(base64Audio);
+                        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                        audioBuffers.push(audioBuffer);
+                    }
+                    
+                    // Calculate total length
+                    const totalLength = audioBuffers.reduce((sum, buffer) => sum + buffer.length, 0);
+                    const numberOfChannels = audioBuffers[0].numberOfChannels;
+                    const sampleRate = audioBuffers[0].sampleRate;
+                    
+                    // Create a new buffer to hold the combined audio
+                    const combinedBuffer = audioContext.createBuffer(numberOfChannels, totalLength, sampleRate);
+                    
+                    // Copy data from each buffer to the combined buffer
+                    let offset = 0;
+                    for (const buffer of audioBuffers) {
+                        for (let channel = 0; channel < numberOfChannels; channel++) {
+                            const channelData = buffer.getChannelData(channel);
+                            combinedBuffer.getChannelData(channel).set(channelData, offset);
+                        }
+                        offset += buffer.length;
+                    }
+                    
+                    // Convert the combined buffer back to a WAV blob
+                    const wavBlob = audioBufferToWav(combinedBuffer);
+                    return wavBlob;
+                    
+                } catch (error) {
+                    console.warn('Failed to combine audio using Web Audio API, concatenating as separate files:', error);
+                    // Fallback: just return the first chunk if combination fails
+                    return base64ToBlob(base64AudioChunks[0], 'audio/wav');
+                }
+            }
+
+            // Convert base64 to ArrayBuffer
+            function base64ToArrayBuffer(base64) {
+                const binaryString = atob(base64);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                return bytes.buffer;
+            }
+
+            // Convert AudioBuffer to WAV Blob
+            function audioBufferToWav(buffer) {
+                const length = buffer.length;
+                const numberOfChannels = buffer.numberOfChannels;
+                const sampleRate = buffer.sampleRate;
+                const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+                const view = new DataView(arrayBuffer);
+                
+                // WAV file header
+                const writeString = (offset, string) => {
+                    for (let i = 0; i < string.length; i++) {
+                        view.setUint8(offset + i, string.charCodeAt(i));
+                    }
+                };
+                
+                writeString(0, 'RIFF');
+                view.setUint32(4, 36 + length * numberOfChannels * 2, true);
+                writeString(8, 'WAVE');
+                writeString(12, 'fmt ');
+                view.setUint32(16, 16, true);
+                view.setUint16(20, 1, true);
+                view.setUint16(22, numberOfChannels, true);
+                view.setUint32(24, sampleRate, true);
+                view.setUint32(28, sampleRate * numberOfChannels * 2, true);
+                view.setUint16(32, numberOfChannels * 2, true);
+                view.setUint16(34, 16, true);
+                writeString(36, 'data');
+                view.setUint32(40, length * numberOfChannels * 2, true);
+                
+                // Convert float samples to 16-bit PCM
+                let offset = 44;
+                for (let i = 0; i < length; i++) {
+                    for (let channel = 0; channel < numberOfChannels; channel++) {
+                        const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+                        view.setInt16(offset, sample * 0x7FFF, true);
+                        offset += 2;
+                    }
+                }
+                
+                return new Blob([arrayBuffer], { type: 'audio/wav' });
             }
 
             // Playback speed control (WPM)
@@ -1368,6 +1683,7 @@ HTML_TEMPLATE = """
             loadSavedSettings();
 
             updateNavigationButtons(); // Set initial state of nav buttons
+            downloadFullBtn.disabled = true; // Initially disable download button
         </script>
     </body>
     </html>
@@ -1415,6 +1731,61 @@ def get_speakers():
         return jsonify({"speakers": tts.speakers})
     else:
         return jsonify({"speakers": []})
+
+# New route to generate full document audio with chunked processing
+@app.route('/full-document-tts', methods=['POST'])
+def full_document_tts():
+    if tts is None:
+        return jsonify({"error": "TTS model not loaded."}), 500
+
+    data = request.json
+    text = data.get('text')
+    speaker = data.get('speaker', 'p225')
+    chunk_index = data.get('chunk_index', None)
+    total_chunks = data.get('total_chunks', None)
+
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+
+    try:
+        # Create a temporary file for the audio chunk
+        import tempfile
+        import os
+        
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+        temp_file.close()
+        
+        # Generate TTS for the text chunk
+        if hasattr(tts, 'speakers') and tts.speakers and speaker in tts.speakers:
+            tts.tts_to_file(text=text, speaker=speaker, file_path=temp_file.name)
+        else:
+            tts.tts_to_file(text=text, file_path=temp_file.name)
+        
+        # Read the file and encode it
+        with open(temp_file.name, 'rb') as f:
+            audio_data = f.read()
+        
+        # Clean up the temporary file
+        os.unlink(temp_file.name)
+        
+        # Base64 encode the audio data
+        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+
+        response_data = {
+            "audio": audio_base64, 
+            "format": "wav"
+        }
+        
+        # Include progress information if this is part of chunked processing
+        if chunk_index is not None and total_chunks is not None:
+            response_data["chunk_index"] = chunk_index
+            response_data["total_chunks"] = total_chunks
+            response_data["progress"] = round((chunk_index + 1) / total_chunks * 100, 1)
+
+        return jsonify(response_data)
+    except Exception as e:
+        print(f"Error during TTS generation for chunk {chunk_index}: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # route the frontend to the welcome page
 @app.route('/')
